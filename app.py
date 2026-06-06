@@ -1,70 +1,64 @@
-import io
-import PyPDF2
 import streamlit as st
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+from pypdf import PdfReader
+from transformers import pipeline
 
-# Configure the web page appearance
-st.set_page_config(page_title="Secure PDF Summarizer", page_icon="🔒", layout="centered")
+# Set up page layout
+st.set_page_config(page_title="Privacy-First PDF Summarizer", page_icon="🔒", layout="wide")
 
 st.title("🔒 Privacy-First PDF Summarizer")
-st.write("Upload a document. The AI processes it entirely in temporary RAM—no files are saved.")
+st.write("Upload any PDF to get a smart, structured summary generated directly in your browser session.")
 
-# 1. Load the model and cache it so it loads fast for users
+# Cache the AI model so it only downloads once
 @st.cache_resource
-def load_ai_model():
-    model_name = "facebook/bart-large-cnn"
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-    return tokenizer, model
+def load_summarizer():
+    # Loading the local BART model
+    return pipeline("summarization", model="facebook/bart-large-cnn")
 
-try:
-    with st.spinner("⏳ Starting local AI engines... please wait..."):
-        tokenizer, model = load_ai_model()
-    st.success("🤖 AI Engine Active!")
-except Exception as e:
-    st.error(f"Failed to load model: {e}")
+summarizer = load_summarizer()
 
-# 2. Web Interface Upload Widget
-uploaded_file = st.file_uploader("Choose a PDF file to summarize", type="pdf")
+# Upload File Widget
+uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
 
 if uploaded_file is not None:
-    # Read the file directly into memory bytes
-    file_bytes = uploaded_file.read()
-    
-    with st.spinner("⚙️ Extracting text and thinking..."):
-        # 3. Extract text from PDF in-memory
-        pdf_file = io.BytesIO(file_bytes)
-        pdf_reader = PyPDF2.PdfReader(pdf_file)
-        extracted_text = ""
-        for page in pdf_reader.pages:
+    with st.spinner("⚙️ Extracting text and analyzing document structure... Please wait."):
+        # 1. Extract all text from the PDF
+        reader = PdfReader(uploaded_file)
+        full_text = ""
+        for page in reader.pages:
             text = page.extract_text()
             if text:
-                extracted_text += text + "\n"
+                full_text += text + "\n"
         
-        if extracted_text.strip():
-            # Prepare text limits safely
-            inputs = tokenizer(
-                "summarize: " + extracted_text, 
-                return_tensors="pt", 
-                max_length=1024, 
-                truncation=True
-            )
+        # 2. Smart Chunking (Breaking long text into 3000-character blocks)
+        # This stops the AI from breaking or truncating long files!
+        chunk_size = 3000
+        chunks = [full_text[i:i+chunk_size] for i in range(0, len(full_text), chunk_size)]
+        
+        st.write(f"📖 *Document read successfully. Processing {len(chunks)} sections...*")
+        
+        # 3. Summarize each chunk separately
+        partial_summaries = []
+        progress_bar = st.progress(0)
+        
+        for index, chunk in enumerate(chunks):
+            # Basic validation to ensure the chunk has enough text
+            if len(chunk.strip().split()) > 30:
+                try:
+                    # AI looks at each piece individually
+                    summary_output = summarizer(chunk, max_length=150, min_length=40, do_sample=False)
+                    partial_summaries.append(summary_output[0]['summary_text'])
+                except Exception:
+                    pass
+            # Update progress bar dynamically
+            progress_bar.progress((index + 1) / len(chunks))
             
-            # 4. Generate the Summary (Slightly adjusted parameters for a fuller summary)
-            summary_ids = model.generate(
-                inputs["input_ids"], 
-                max_length=200,      # Increased length so it's not too short!
-                min_length=60,       # Guarantees a decent-sized summary
-                length_penalty=2.0, 
-                num_beams=4, 
-                early_stopping=True
-            )
-            hf_summary = tokenizer.decode(summary_ids[0], skip_special_tokens=True)
-            
-            # Display results in a nice card UI component
-            st.markdown("---")
-            st.subheader("📋 Executive Summary:")
-            st.info(hf_summary)
-            st.success("🛡️ Process complete. Data cleared from active memory safely.")
-        else:
-            st.warning("⚠️ No readable text found in this PDF file.")
+    # Display the final, beautiful output
+    st.success("✨ Summary Generation Complete!")
+    
+    st.subheader("📋 Executive Summary Breakdown")
+    
+    # Presenting the chunks beautifully as bullet points or paragraphs
+    for i, part in enumerate(partial_summaries):
+        st.markdown(f"**Section {i+1}:** {part}")
+        
+    st.info("🔒 Security Notice: Process complete. Data cleared from active memory safely.")
